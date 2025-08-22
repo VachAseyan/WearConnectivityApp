@@ -30,6 +30,8 @@ const Section: React.FC<
   );
 };
 
+const { WearMessaging } = NativeModules as any;
+
 export default function App(): React.JSX.Element {
   const [nodes, setNodes] = React.useState<Array<{id: string; displayName: string; isNearby: boolean}>>([]);
   const [message, setMessage] = React.useState('Hello from watch');
@@ -46,42 +48,17 @@ export default function App(): React.JSX.Element {
   }, []);
   
   React.useEffect(() => {
-    const {WearMessaging} = NativeModules;
-    const emitter = new NativeEventEmitter(WearMessaging);
+      const emitter = new NativeEventEmitter(WearMessaging as any);
     
     // Listen for messages from phone
     const messageListener = emitter.addListener('WearMessage', (evt: any) => {
+      console.log('WearMessage evt:', evt);
       const payload = evt?.message ?? evt?.data;
-      addLog(`📨 Received - Path: ${evt.path}, Data: ${payload ?? ''}`);
-      
-      // Skip handshake messages
-      if (evt.path === '/APP_OPEN_WEARABLE_PAYLOAD') {
-        return;
-      }
-      
-      // Always collect payloads from phone, regardless of path
-      if (payload != null) {
+      if (evt.path === '/APP_OPEN_WEARABLE_PAYLOAD') return;
+      if (evt.path === '/message-item-received' && payload != null) {
+        setLastMessage(String(payload));
         setMessagesFromPhone(prev => [...prev, String(payload)]);
-      }
-
-      // Handle messages from phone
-      if (evt.path === '/message-item-received') {
-        setLastMessage(`${payload ?? ''}`);
-        addLog(`📱➡️⌚ Phone → Watch: ${payload ?? ''}`);
-        // Echo back to phone so phone can confirm receipt and display in its list
-        try {
-          const {WearMessaging} = NativeModules;
-          WearMessaging.sendMessageToPhone(String(payload ?? ''))
-            .then(() => addLog('↩️ Echoed back to Phone'))
-            .catch((e: any) => addLog(`⚠️ Echo to Phone failed: ${String(e?.message ?? e)}`));
-        } catch (e) {
-          // ignore
-        }
-      } else if (evt.path === '/wear-message-to-phone') {
-        // If phone ever echoes watch's message back on the same path
-        addLog(`↩️ Echo (Watch path): ${payload ?? ''}`);
-      } else {
-        addLog(`ℹ️ Other path: ${evt.path}`);
+        addLog(`⬅️ From Phone: ${payload}`);
       }
     });
 
@@ -89,11 +66,9 @@ export default function App(): React.JSX.Element {
     const loadNodes = async () => {
       try {
         const connectedNodes = await WearMessaging.getConnectedNodes();
-        console.log('Connected nodes:', connectedNodes);
         setNodes(connectedNodes);
         setConnectionStatus(connectedNodes.length > 0 ? 'connected' : 'disconnected');
       } catch (error) {
-        console.error('Failed to get connected nodes:', error);
         setConnectionStatus('disconnected');
       }
     };
@@ -109,11 +84,7 @@ export default function App(): React.JSX.Element {
     };
   }, []);
 
-  // Log the full received array whenever it changes
-  React.useEffect(() => {
-    console.log('messagesFromPhone changed:', messagesFromPhone);
-    addLog(`messagesFromPhone (${messagesFromPhone.length}): [${messagesFromPhone.join(', ')}]`);
-  }, [messagesFromPhone, addLog]);
+  // No verbose list-change logs
 
   const sendToPhone = React.useCallback(async () => {
     const {WearMessaging} = NativeModules;
@@ -124,14 +95,12 @@ export default function App(): React.JSX.Element {
     }
 
     try {
-      addLog(`⌚➡️📱 Sending: "${message}"`);
       const result = await WearMessaging.sendMessageToPhone(message);
-      addLog(`✅ Sent to Phone OK: ${result}`);
+      addLog('✅ Sent to Phone');
       setLastSent(message);
       setMessage(''); // Clear input after sending
     } catch (error) {
-      console.error('Send error:', error);
-      Alert.alert('Error', `Failed to send: ${error}`);
+      Alert.alert('Error', 'Failed to send');
     }
   }, [nodes, message]);
 
@@ -141,11 +110,8 @@ export default function App(): React.JSX.Element {
       const connectedNodes = await WearMessaging.getConnectedNodes();
       setNodes(connectedNodes);
       setConnectionStatus(connectedNodes.length > 0 ? 'connected' : 'disconnected');
-      Alert.alert('Refreshed', `Found ${connectedNodes.length} connected devices`);
     } catch (error) {
-      console.error('Refresh error:', error);
       setConnectionStatus('disconnected');
-      Alert.alert('Error', 'Failed to refresh connection');
     }
   }, []);
 
@@ -164,6 +130,8 @@ export default function App(): React.JSX.Element {
       default: return 'Checking...';
     }
   };
+
+  
 
   return (
     <>

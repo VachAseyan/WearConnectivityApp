@@ -1,10 +1,15 @@
 package com.watchapp.wear
 
 import android.util.Log
+import android.content.Intent
+import android.content.Context
+import android.content.SharedPreferences
 import com.google.android.gms.wearable.MessageEvent
 import com.google.android.gms.wearable.Wearable
 import com.google.android.gms.wearable.WearableListenerService
 import java.nio.charset.StandardCharsets
+import org.json.JSONArray
+import org.json.JSONObject
 
 class WearMessageListenerService : WearableListenerService() {
   companion object {
@@ -14,6 +19,10 @@ class WearMessageListenerService : WearableListenerService() {
     private const val WEAR_TO_PHONE_PATH = "/wear-message-to-phone"
     private const val WEAR_APP_CHECK_PAYLOAD_PREFIX = "AppOpenWearable"
     private const val WEAR_APP_CHECK_ACK_PREFIX = "AppOpenWearableACK"
+
+    // Pending store
+    private const val PREFS_NAME = "wear_msg_store"
+    private const val KEY_PENDING = "pending_phone_to_watch"
   }
 
   override fun onMessageReceived(messageEvent: MessageEvent) {
@@ -21,29 +30,60 @@ class WearMessageListenerService : WearableListenerService() {
     val data = String(messageEvent.data, StandardCharsets.UTF_8)
     val sourceNodeId = messageEvent.sourceNodeId
 
-    Log.d(TAG, "[BG] onMessageReceived path=$path data=$data from=$sourceNodeId")
-
     when (path) {
       APP_OPEN_WEARABLE_PAYLOAD_PATH -> {
-        if (data.startsWith(WEAR_APP_CHECK_PAYLOAD_PREFIX)) {
-          val parts = data.split(":", limit = 2)
-          val nonce = if (parts.size == 2) parts[1] else ""
-          val ack = if (nonce.isNotEmpty()) "$WEAR_APP_CHECK_ACK_PREFIX:$nonce" else WEAR_APP_CHECK_ACK_PREFIX
-          Log.d(TAG, "[BG] Handshake from phone, sending ACK nonce=$nonce")
-          Wearable.getMessageClient(this)
-            .sendMessage(sourceNodeId, APP_OPEN_WEARABLE_PAYLOAD_PATH, ack.toByteArray(StandardCharsets.UTF_8))
-            .addOnSuccessListener { Log.d(TAG, "[BG] ACK sent") }
-            .addOnFailureListener { e -> Log.e(TAG, "[BG] Failed to send ACK", e) }
+        when {
+          data == WEAR_APP_CHECK_ACK_PREFIX -> { /* no-op */ }
+          data == WEAR_APP_CHECK_PAYLOAD_PREFIX -> {
+            Wearable.getMessageClient(this)
+              .sendMessage(sourceNodeId, APP_OPEN_WEARABLE_PAYLOAD_PATH, WEAR_APP_CHECK_ACK_PREFIX.toByteArray(StandardCharsets.UTF_8))
+              .addOnSuccessListener { }
+              .addOnFailureListener { }
+          }
         }
       }
       MESSAGE_ITEM_RECEIVED_PATH -> {
-        // Phone -> Watch user messages
-        Log.d(TAG, "[BG] Phone says: $data")
+        Log.i(TAG, "[BG] Received from phone: $data")
+        // Persist so UI can read later if app isn't running
+        try {
+          savePendingMessage(this, path, data, sourceNodeId)
+        } catch (e: Exception) {
+          Log.e(TAG, "Failed to persist pending message", e)
+        }
+        // Forward to app via explicit broadcast so foreground module can emit to JS
+        val intent = Intent("com.watchapp.wear.MESSAGE_FROM_PHONE").apply {
+          putExtra("path", path)
+          putExtra("data", data)
+          putExtra("sourceNodeId", sourceNodeId)
+          putExtra("timestamp", System.currentTimeMillis())
+        }
+        try {
+          // Make explicit to this app package to avoid implicit broadcast restrictions
+          intent.setPackage(applicationContext.packageName)
+          Log.d(TAG, "Broadcasting to package: ${applicationContext.packageName}")
+          sendBroadcast(intent)
+        } catch (e: Exception) {
+          Log.e(TAG, "Failed to broadcast message to app", e)
+        }
       }
       WEAR_TO_PHONE_PATH -> {
         // Sent from watch to phone; nothing to handle here
       }
-      else -> Log.d(TAG, "[BG] Unknown path: $path")
+      else -> { /* ignore */ }
     }
+  }
+
+  private fun savePendingMessage(ctx: Context, path: String, data: String, sourceNodeId: String) {
+    val prefs: SharedPreferences = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    val json = prefs.getString(KEY_PENDING, null)
+    val arr = if (json.isNullOrEmpty()) JSONArray() else try { JSONArray(json) } catch (_: Exception) { JSONArray() }
+    val obj = JSONObject().apply {
+      put("path", path)
+      put("data", data)
+      put("sourceNodeId", sourceNodeId)
+      put("timestamp", System.currentTimeMillis())
+    }
+    arr.put(obj)
+    prefs.edit().putString(KEY_PENDING, arr.toString()).apply()
   }
 }

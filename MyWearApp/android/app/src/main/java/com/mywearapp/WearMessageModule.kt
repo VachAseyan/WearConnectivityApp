@@ -4,6 +4,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.net.Uri
+import android.bluetooth.BluetoothAdapter
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
@@ -23,6 +24,7 @@ class WearMessageModule(private val reactCtx: ReactApplicationContext) :
 
   companion object {
     private const val TAG = "WearMessageModule"
+    private const val DEBUG = false
     private const val APP_OPEN_WEARABLE_PAYLOAD_PATH = "/APP_OPEN_WEARABLE_PAYLOAD"
     private const val MESSAGE_ITEM_RECEIVED_PATH = "/message-item-received"
     private const val WEAR_TO_PHONE_PATH = "/wear-message-to-phone"
@@ -42,7 +44,7 @@ class WearMessageModule(private val reactCtx: ReactApplicationContext) :
 
   override fun initialize() {
     super.initialize()
-    Log.d(TAG, "🔧 Initializing WearMessageModule")
+    if (DEBUG) Log.d(TAG, "Initializing WearMessageModule")
     Wearable.getMessageClient(reactCtx).addListener(this)
     Wearable.getCapabilityClient(reactCtx)
       .addListener(this, Uri.parse("wear://"), CapabilityClient.FILTER_REACHABLE)
@@ -51,7 +53,7 @@ class WearMessageModule(private val reactCtx: ReactApplicationContext) :
   }
 
   override fun onCatalystInstanceDestroy() {
-    Log.d(TAG, "🔴 Destroying WearMessageModule")
+    if (DEBUG) Log.d(TAG, "Destroying WearMessageModule")
     Wearable.getMessageClient(reactCtx).removeListener(this)
     Wearable.getCapabilityClient(reactCtx).removeListener(this)
     super.onCatalystInstanceDestroy()
@@ -69,13 +71,23 @@ class WearMessageModule(private val reactCtx: ReactApplicationContext) :
 
   @ReactMethod
   fun checkConnection(promise: Promise) {
+      Log.e("Hello","checkConnection")
     try {
       // Fetch nodes fresh to avoid race conditions with async updates
       Wearable.getNodeClient(reactCtx)
         .connectedNodes
         .addOnSuccessListener { nodes ->
-          if (nodes.isEmpty()) {
-            Log.d(TAG, "❌ No connected nodes found")
+          val btEnabled = BluetoothAdapter.getDefaultAdapter()?.isEnabled == true
+          val nearbyNodes = nodes.filter { it.isNearby }
+
+          if (!btEnabled) {
+            if (DEBUG) Log.d(TAG, "Bluetooth disabled; treating as disconnected")
+            promise.resolve(false)
+            return@addOnSuccessListener
+          }
+
+          if (nearbyNodes.isEmpty()) {
+            if (DEBUG) Log.d(TAG, "No nearby nodes; treating as disconnected")
             promise.resolve(false)
             return@addOnSuccessListener
           }
@@ -83,7 +95,7 @@ class WearMessageModule(private val reactCtx: ReactApplicationContext) :
           lastAck = null
           lastNodeId = null
 
-          Log.d(TAG, "🤝 Checking connection with ${nodes.size} node(s)")
+          if (DEBUG) Log.d(TAG, "Checking BLE connection with ${nearbyNodes.size} nearby node(s)")
 
           val messageClient = Wearable.getMessageClient(reactCtx)
 
@@ -93,21 +105,21 @@ class WearMessageModule(private val reactCtx: ReactApplicationContext) :
           var resolved = false
           fun attempt(attempt: Int, maxAttempts: Int) {
             if (resolved) return
-            // Clear any stale ACK from previous attempt before generating a new nonce
+            // Clear any stale ACK from previous attempt
             lastAck = null
             HandshakeStore.clear()
-            val nonce = System.currentTimeMillis().toString()
-            val payloadString = "$WEAR_APP_CHECK_PAYLOAD_PREFIX:$nonce"
-            expectedAck = "$WEAR_APP_CHECK_ACK_PREFIX:$nonce"
+            // Send plain handshake like the working Kotlin sample
+            val payloadString = WEAR_APP_CHECK_PAYLOAD_PREFIX
+            expectedAck = WEAR_APP_CHECK_ACK_PREFIX
             val payload = payloadString.toByteArray(StandardCharsets.UTF_8)
 
-            Log.d(TAG, "📤 Handshake attempt ${attempt + 1}/$maxAttempts with expectedAck=$expectedAck")
-            nodes.forEach { node ->
-              Log.d(TAG, "📤 Sending handshake to node: ${node.id} (${node.displayName})")
+            if (DEBUG) Log.d(TAG, "Handshake attempt ${attempt + 1}/$maxAttempts (BLE nearby only) with expectedAck=$expectedAck")
+            nearbyNodes.forEach { node ->
+              if (DEBUG) Log.d(TAG, "Sending handshake to node: ${node.id} (${node.displayName})")
               messageClient
                 .sendMessage(node.id, APP_OPEN_WEARABLE_PAYLOAD_PATH, payload)
-                .addOnSuccessListener { Log.d(TAG, "✅ Handshake dispatched to ${node.id}") }
-                .addOnFailureListener { e -> Log.e(TAG, "❌ Failed to send handshake to ${node.id}", e) }
+                .addOnSuccessListener { if (DEBUG) Log.d(TAG, "Handshake dispatched to ${node.id}") }
+                .addOnFailureListener { e -> if (DEBUG) Log.e(TAG, "Failed to send handshake to ${node.id}", e) }
             }
 
             mainHandler.postDelayed({
@@ -118,15 +130,15 @@ class WearMessageModule(private val reactCtx: ReactApplicationContext) :
               val ackSeen = lastAck ?: HandshakeStore.lastAck
               val isConnected = ackSeen == expectedAck
               if (isConnected) {
-                Log.d(TAG, "🔍 Connection OK on attempt ${attempt + 1}: expectedAck=$expectedAck lastAckInModule=$lastAck lastAckInStore=${HandshakeStore.lastAck}")
+                Log.i(TAG, "ConnectionSuccess")
                 resolved = true
                 pendingConnectionPromise = null
                 pending.resolve(true)
               } else if (attempt + 1 < maxAttempts) {
-                Log.w(TAG, "⏳ No ACK yet, retrying... attempt ${attempt + 2}")
+                if (DEBUG) Log.d(TAG, "No ACK yet, retrying... attempt ${attempt + 2}")
                 attempt(attempt + 1, maxAttempts)
               } else {
-                Log.e(TAG, "❌ Handshake failed after $maxAttempts attempts. lastAckInModule=$lastAck lastAckInStore=${HandshakeStore.lastAck} expectedAck=$expectedAck")
+                if (DEBUG) Log.e(TAG, "Handshake failed after $maxAttempts attempts. lastAckInModule=$lastAck lastAckInStore=${HandshakeStore.lastAck} expectedAck=$expectedAck")
                 resolved = true
                 pendingConnectionPromise = null
                 pending.resolve(false)
@@ -137,30 +149,61 @@ class WearMessageModule(private val reactCtx: ReactApplicationContext) :
           attempt(0, 3)
         }
         .addOnFailureListener { e ->
-          Log.e(TAG, "❌ Failed to load connected nodes for handshake", e)
+          if (DEBUG) Log.e(TAG, "Failed to load connected nodes for handshake", e)
           promise.reject("NODES_FETCH_ERROR", e.message, e)
         }
     } catch (e: Exception) {
-      Log.e(TAG, "❌ Connection check error", e)
+      if (DEBUG) Log.e(TAG, "Connection check error", e)
       promise.reject("CHECK_CONNECTION_ERROR", e.message, e)
     }
   }
 
   @ReactMethod
   fun sendMessageToWear(message: String, promise: Promise) {
+      Log.e("sendmessagetowear","hello")
     try {
-      if (connectedNodes.isEmpty()) {
-        updateConnectedNodes()
-        if (connectedNodes.isEmpty()) {
-          promise.reject("NO_CONNECTED_NODES", "No connected wearable device found")
-          return
+      // Fetch fresh connected nodes to avoid stale cache and ensure watch is targeted
+      Wearable.getNodeClient(reactCtx)
+        .connectedNodes
+        .addOnSuccessListener { nodes ->
+          val nearby = nodes.filter { it.isNearby }
+          val targets = if (nearby.isNotEmpty()) nearby else nodes
+
+          if (targets.isEmpty()) {
+            promise.reject("NO_CONNECTED_NODES", "No connected wearable device found")
+            return@addOnSuccessListener
+          }
+
+          Log.d(TAG, "Sending to ${targets.size} node(s). Payload='$message'")
+
+          val messageClient = Wearable.getMessageClient(reactCtx)
+          var resolved = false
+          var failures = 0
+          val payload = message.toByteArray(StandardCharsets.UTF_8)
+
+          targets.forEach { node ->
+            messageClient
+              .sendMessage(node.id, MESSAGE_ITEM_RECEIVED_PATH, payload)
+              .addOnSuccessListener {
+                if (!resolved) {
+                  Log.i(TAG, "SendSuccessToWatch node=${node.id}")
+                  resolved = true
+                  promise.resolve("Message sent to wearable (${node.displayName ?: node.id})")
+                }
+              }
+              .addOnFailureListener { e ->
+                failures += 1
+                Log.w(TAG, "Failed to send to node=${node.id}", e)
+                if (!resolved && failures >= targets.size) {
+                  promise.reject("SEND_ERROR", "Failed to send to all connected nodes", e)
+                }
+              }
+          }
         }
-      }
-
-      val nodeId = connectedNodes.first()
-      Log.d(TAG, "📱➡️⌚ Sending message to node: $nodeId, message: $message")
-
-      sendToNode(nodeId, message, promise)
+        .addOnFailureListener { e ->
+          Log.e(TAG, "❌ Failed to load connected nodes for send", e)
+          promise.reject("NODES_FETCH_ERROR", e.message, e)
+        }
     } catch (e: Exception) {
       Log.e(TAG, "❌ Send message error", e)
       promise.reject("SEND_ERROR", e.message, e)
@@ -169,6 +212,7 @@ class WearMessageModule(private val reactCtx: ReactApplicationContext) :
 
   @ReactMethod
   fun getConnectedNodes(promise: Promise) {
+    Log.e("Connected Nodes","yes")
     try {
       Wearable.getNodeClient(reactCtx).connectedNodes
         .addOnSuccessListener { nodes ->
@@ -211,19 +255,7 @@ class WearMessageModule(private val reactCtx: ReactApplicationContext) :
       }
   }
 
-  private fun sendToNode(nodeId: String, message: String, promise: Promise) {
-    val payload = message.toByteArray(StandardCharsets.UTF_8)
-    Wearable.getMessageClient(reactCtx)
-      .sendMessage(nodeId, MESSAGE_ITEM_RECEIVED_PATH, payload)
-      .addOnSuccessListener {
-        Log.d(TAG, "✅ Message sent successfully to $nodeId")
-        promise.resolve("Message sent to wearable")
-      }
-      .addOnFailureListener { e ->
-        Log.e(TAG, "❌ Failed to send message to $nodeId", e)
-        promise.reject("SEND_ERROR", e.message, e)
-      }
-  }
+  // sendToNode no longer used; sending to all targets above for reliability
 
   override fun onMessageReceived(messageEvent: MessageEvent) {
     try {
@@ -231,52 +263,44 @@ class WearMessageModule(private val reactCtx: ReactApplicationContext) :
       val message = String(messageEvent.data, StandardCharsets.UTF_8)
       val sourceNodeId = messageEvent.sourceNodeId
 
-      Log.d(TAG, "🔔 ===== PHONE RECEIVED MESSAGE =====")
-      Log.d(TAG, "🔔 Path: $eventPath")
-      Log.d(TAG, "🔔 Message: $message")
-      Log.d(TAG, "🔔 Source: $sourceNodeId")
-      Log.d(TAG, "🔔 Expected ACK: $expectedAck")
-
-      Log.d(TAG, "🔔 ===================================")
+      if (DEBUG) {
+        Log.d(TAG, "Received event path=$eventPath msg=$message src=$sourceNodeId expectedAck=$expectedAck")
+      }
 
       when (eventPath) {
         APP_OPEN_WEARABLE_PAYLOAD_PATH -> {
-          Log.d(TAG, "🤝 Handshake path matched on phone!")
           lastAck = message
           lastNodeId = sourceNodeId
           HandshakeStore.lastAck = message
           HandshakeStore.lastNodeId = sourceNodeId
-          Log.d(TAG, "🤝 Stored ACK: $message from $sourceNodeId")
 
           if (message == expectedAck) {
-            Log.d(TAG, "✅ CORRECT ACK RECEIVED!")
+            Log.i(TAG, "ConnectionSuccess")
             // If handshake check is in progress, resolve immediately
             pendingConnectionPromise?.let { pending ->
-              Log.d(TAG, "✅ Resolving pending connection promise immediately")
+              if (DEBUG) Log.d(TAG, "Resolving pending connection promise immediately")
               pendingConnectionPromise = null
               try {
                 pending.resolve(true)
               } catch (e: Exception) {
-                Log.w(TAG, "Pending promise resolve failed (already handled?)", e)
+                if (DEBUG) Log.w(TAG, "Pending promise resolve failed (already handled?)", e)
               }
             }
           } else {
-            Log.w(TAG, "⚠️ Wrong ACK received. Expected: '$expectedAck', Got: '$message'")
+            if (DEBUG) Log.w(TAG, "Wrong ACK received. Expected: '$expectedAck', Got: '$message'")
           }
           return // Don't show handshake in UI
         }
 
         WEAR_TO_PHONE_PATH -> {
-          Log.d(TAG, "⌚➡️📱 Message from watch: $message")
+          Log.i(TAG, "ReceiveSuccessFromWatch:$message")
         }
 
         MESSAGE_ITEM_RECEIVED_PATH -> {
           Log.d(TAG, "📨 Legacy path message: $message")
         }
 
-        else -> {
-          Log.d(TAG, "❓ Unknown path on phone: $eventPath")
-        }
+        else -> { if (DEBUG) Log.d(TAG, "Unknown path on phone: $eventPath") }
       }
 
       // Emit to React Native
@@ -291,13 +315,11 @@ class WearMessageModule(private val reactCtx: ReactApplicationContext) :
         .getJSModule(RCTDeviceEventEmitter::class.java)
         .emit("WearMessage", params)
 
-    } catch (e: Exception) {
-      Log.e(TAG, "❌ Failed to process message event", e)
-    }
+    } catch (e: Exception) { if (DEBUG) Log.e(TAG, "Failed to process message event", e) }
   }
 
   override fun onCapabilityChanged(capabilityInfo: CapabilityInfo) {
-    Log.d(TAG, "🔄 Capability changed: ${capabilityInfo.name}, nodes: ${capabilityInfo.nodes.size}")
+    if (DEBUG) Log.d(TAG, "Capability changed: ${capabilityInfo.name}, nodes: ${capabilityInfo.nodes.size}")
 
     updateConnectedNodes()
 

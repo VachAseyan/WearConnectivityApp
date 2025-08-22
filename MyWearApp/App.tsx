@@ -7,7 +7,6 @@ import {
   StyleSheet,
   NativeModules,
   NativeEventEmitter,
-  DeviceEventEmitter,
   ScrollView,
 } from 'react-native';
 
@@ -37,8 +36,6 @@ export default function App() {
   };
 
   useEffect(() => {
-    addLog('📱 Phone app starting...');
-
     checkConnection();
     getNodes();
 
@@ -50,44 +47,18 @@ export default function App() {
       sourceNodeId?: string;
       timestamp?: number;
     }) => {
-      try { addLog(`🐞 RAW EVENT: ${JSON.stringify(data)}`); } catch {}
       const payload = (data as any)?.message ?? (data as any)?.data ?? (data as any)?.payload;
-      addLog(`📨 Received - Path: ${data.path}, Message: ${payload ?? ''}`);
-
       // Ignore handshake traffic in UI
       if (data.path === '/APP_OPEN_WEARABLE_PAYLOAD') return;
-
-      // Path-specific logging for direction clarity
-      if (data.path === '/wear-message-to-phone') {
-        // Watch → Phone
-        if (payload != null) {
-          addLog(`⌚➡️📱 Watch → Phone: ${payload}`);
-          setLastFromWatch(String(payload));
-          setMessagesFromWatch(prev => [...prev, String(payload)]);
-
-          // Auto-echo back to Watch so it can display in its received list
-          WearMessage.sendMessageToWear(String(payload))
-            .then(res => addLog(`↩️ Echoed back to Watch: ${res}`))
-            .catch(err => addLog(`⚠️ Echo failed: ${String(err?.message ?? err)}`));
-        }
-      } else if (data.path === '/message-item-received') {
-        // Phone → Watch (if watch echoes back on same path)
-        if (payload != null) addLog(`📱➡️⌚ Phone → Watch (echo): ${payload}`);
-      } else {
-        addLog(`ℹ️ Other path: ${data.path}`);
-      }
-
-      // Always collect any non-handshake payload to list (in case path differs)
-      if (data.path !== '/APP_OPEN_WEARABLE_PAYLOAD' && payload != null) {
+      if (data.path === '/wear-message-to-phone' && payload != null) {
+        addLog(`⬅️ From Watch: ${payload}`);
+        setLastFromWatch(String(payload));
         setMessagesFromWatch(prev => [...prev, String(payload)]);
       }
     };
 
     // Primary listener via NativeEventEmitter bound to module
     const subscription = wearEmitter.addListener('WearMessage', handler);
-
-    // Android fallback: DeviceEventEmitter listens to RCTDeviceEventEmitter directly
-    const subscriptionFallback = (DeviceEventEmitter as any).addListener('WearMessage', handler);
 
     const nodeSubscription = wearEmitter.addListener('WearNodesChanged', (data: {
       count: number;
@@ -107,7 +78,8 @@ export default function App() {
 
     return () => {
       subscription.remove();
-      subscriptionFallback.remove();
+      // No fallback DeviceEventEmitter to avoid duplicate events
+
       nodeSubscription.remove();
       capabilitySubscription.remove();
     };
@@ -115,47 +87,31 @@ export default function App() {
 
   const checkConnection = async () => {
     try {
-      addLog('🤝 Checking connection...');
       const connected = await WearMessage.checkConnection();
       setIsConnected(connected);
-      addLog(`🔍 Connection result: ${connected ? '✅ Connected' : '❌ Disconnected'}`);
+      addLog(connected ? '✅ Connected to Watch' : '❌ Disconnected');
 
       if (!connected) {
-        addLog('⚠️ Connection failed - checking nodes...');
         await getNodes();
       }
     } catch (err: unknown) {
       const errorMsg = String((err as any)?.message ?? err);
-      addLog(`❌ Connection error: ${errorMsg}`);
+      addLog(`❌ Disconnected (${errorMsg})`);
       setIsConnected(false);
     }
   };
 
   const getNodes = async () => {
     try {
-      addLog('🔍 Getting connected nodes...');
       const nodes = await WearMessage.getConnectedNodes();
       setConnectedNodes(nodes);
-      addLog(`📱 Found ${nodes.length} connected nodes`);
-
-      nodes.forEach((node, index) => {
-        addLog(`📱 Node ${index + 1}: ${node.displayName || 'Unknown'} - Nearby: ${node.isNearby}`);
-      });
-
-      if (nodes.length === 0) {
-        addLog('⚠️ No nodes found - Check if:');
-        addLog('1. Watch is paired and connected');
-        addLog('2. Bluetooth is enabled');
-        addLog('3. Watch app is installed and running');
-      }
+      addLog("Hello")
     } catch (err: unknown) {
       const errorMsg = String((err as any)?.message ?? err);
-      addLog(`❌ Get nodes error: ${errorMsg}`);
+      addLog(`❌ Nodes error: ${errorMsg}`);
       setConnectedNodes([]);
     }
   };
-
-  console.log('Connected nodes:', connectedNodes);
 
   const sendMessage = async () => {
     if (!message.trim()) {
@@ -164,9 +120,8 @@ export default function App() {
     }
 
     try {
-      addLog(`📱➡️⌚ Sending: "${message}"`);
       const result = await WearMessage.sendMessageToWear(message);
-      addLog(`✅ Sent to Watch OK: ${result}`);
+      addLog('✅ Sent to Watch');
       setLastSentToWatch(message);
       setMessage('');
     } catch (err: any) {
@@ -174,8 +129,6 @@ export default function App() {
       addLog(`❌ Send error: ${errorMsg}`);
     }
   };
-
-  console.log(messagesFromWatch)
 
   const clearLogs = () => {
     setLogs([]);
