@@ -72,6 +72,12 @@ def enableProguardInReleaseBuilds = false
  */
 def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
 
+repositories {
+    google()
+    mavenCentral()
+    maven { url 'https://maven.google.com' }
+}
+
 android {
     ndkVersion rootProject.ext.ndkVersion
     buildToolsVersion rootProject.ext.buildToolsVersion
@@ -84,6 +90,7 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
         versionName "1.0"
+        multiDexEnabled true
     }
     signingConfigs {
         debug {
@@ -109,10 +116,20 @@ android {
 
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
-    implementation("com.facebook.react:react-android")
 
-    // Wear OS Data Layer
+    implementation fileTree(dir: "libs", include: ["*.aar"])
+
+    // implementation(name:"mobilecommunication-release", ext:"aar")
+
+
+     implementation("com.facebook.react:react-android")
+    
+    // Wear OS Dependencies
     implementation "com.google.android.gms:play-services-wearable:18.2.0"
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3"
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3"
+    implementation 'androidx.multidex:multidex:2.0.1'
+
 
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")

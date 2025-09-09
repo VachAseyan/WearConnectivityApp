@@ -1,4 +1,4 @@
-package com.mywearapp
+package com.watchapp
 
 import android.app.Application
 import android.util.Log
@@ -16,10 +16,10 @@ class MainApplication : Application(), ReactApplication {
     override val reactNativeHost: ReactNativeHost =
         object : DefaultReactNativeHost(this) {
             override fun getPackages(): List<ReactPackage> {
-                Log.d("MobileCommunication", "getPackages() called")
+                Log.d("WearableCommunication", "getPackages() called")
                 return PackageList(this).packages.apply {
-                    add(MobileCommunicationPackage())
-                    Log.d("MobileCommunication", "MobileCommunicationPackage added to packages")
+                    add(WearableCommunicationPackage())
+                    Log.d("WearableCommunication", "WearableCommunicationPackage added to packages")
                 }
             }
 
@@ -34,7 +34,7 @@ class MainApplication : Application(), ReactApplication {
 
     override fun onCreate() {
         super.onCreate()
-        Log.d("MobileCommunication", "MainApplication onCreate() called")
+        Log.d("WearableCommunication", "MainApplication onCreate() called")
         loadReactNative(this)
     }
 }
