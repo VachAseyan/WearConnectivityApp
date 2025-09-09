@@ -17,14 +17,14 @@ class MobileCommunicationModule(
     private var communicationManager: MobileCommunicationManager? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private val coroutineScope = CoroutineScope(Dispatchers.IO)
-    private var isInitialized = false
 
     companion object {
-        private const val TAG = "MobileCommunicationModule"
+        private const val TAG = "MobileCommModule"
     }
 
     override fun getName(): String = "MobileCommunicationModule"
 
+    // RN EventEmitter compatibility
     @ReactMethod
     fun addListener(eventName: String) {
         Log.d(TAG, "addListener: $eventName")
@@ -37,137 +37,93 @@ class MobileCommunicationModule(
 
     @ReactMethod
     fun initialize(promise: Promise) {
-        Log.d(TAG, "initialize called")
-        
-        if (isInitialized) {
-            promise.resolve(true)
-            return
-        }
-
+        Log.e(TAG, "initialize")
         mainHandler.post {
             try {
-                communicationManager = MobileCommunicationManager(reactContext)
+                if (communicationManager == null) {
+                    communicationManager = MobileCommunicationManager(reactContext)
 
-                // Set up callbacks BEFORE registering listeners
-                communicationManager?.onMessageReceived = { message: String, fromWear: Boolean ->
-                    Log.d(TAG, "onMessageReceived: $message, fromWear: $fromWear")
-                    sendEvent("onMessageReceived", Arguments.createMap().apply {
-                        putString("message", message)
-                        putBoolean("fromWear", fromWear)
-                    })
+                    communicationManager?.onMessageReceived = { message: String, fromWear: Boolean ->
+                    Log.e(TAG, "onMessageReceived: $message, $fromWear")
+                        sendEvent("onMessageReceived", Arguments.createMap().apply {
+                            putString("message", message)
+                            putBoolean("fromWear", fromWear)
+                        })
+                    }
+
+                    communicationManager?.onWearableConnected = { nodePresent: Boolean, ackReceived: Boolean ->
+                        Log.e(TAG, "onWearableConnected: $nodePresent, $ackReceived")
+                        sendEvent("onWearableConnected", Arguments.createMap().apply {
+                            putBoolean("nodePresent", nodePresent)
+                            putBoolean("ackReceived", ackReceived)
+                        })
+                    }
+
+                    communicationManager?.onMessageSent = { success: Boolean, message: String? ->
+                        Log.e(TAG, "onMessageSent: $success, $message")
+                        sendEvent("onMessageSent", Arguments.createMap().apply {
+                            putBoolean("success", success)
+                            putString("message", message)
+                        })
+                    }
                 }
 
-                communicationManager?.onWearableConnected = { nodePresent: Boolean, ackReceived: Boolean ->
-                    Log.d(TAG, "onWearableConnected: nodePresent=$nodePresent, ackReceived=$ackReceived")
-                    sendEvent("onWearableConnected", Arguments.createMap().apply {
-                        putBoolean("nodePresent", nodePresent)
-                        putBoolean("ackReceived", ackReceived)
-                    })
-                }
-
-                communicationManager?.onMessageSent = { success: Boolean, message: String? ->
-                    Log.d(TAG, "onMessageSent: success=$success, message=$message")
-                    sendEvent("onMessageSent", Arguments.createMap().apply {
-                        putBoolean("success", success)
-                        putString("message", message ?: "")
-                    })
-                }
-
-                // Register listeners after setting up callbacks
                 communicationManager?.registerListeners()
-                isInitialized = true
-                
-                Log.d(TAG, "Module initialized successfully")
                 promise.resolve(true)
-                
             } catch (e: Exception) {
                 Log.e(TAG, "Initialize failed: ${e.message}", e)
-                promise.reject("INIT_ERROR", e.message, e)
+                promise.reject("INIT_ERROR", e.message)
             }
         }
     }
 
     @ReactMethod
     fun sendMessageToWearable(message: String, promise: Promise) {
-        Log.d(TAG, "sendMessageToWearable: $message")
-        
-        if (!isInitialized || communicationManager == null) {
-            promise.reject("NOT_INITIALIZED", "Module not initialized")
-            return
-        }
-
-        mainHandler.post {
-            try {
-                communicationManager?.sendMessageToWearable(message)
-                // Promise resolve անենք անմիջապես, իսկ actual result-ը կգա onMessageSent callback-ով
-                promise.resolve(true)
-            } catch (e: Exception) {
-                Log.e(TAG, "sendMessageToWearable failed: ${e.message}", e)
-                promise.reject("SEND_ERROR", e.message, e)
-            }
-        }
-    }
-
-    @ReactMethod
-fun checkWearableConnection(promise: Promise) {
-    Log.d(TAG, "checkWearableConnection called")
-    
-    if (!isInitialized || communicationManager == null) {
-        promise.reject("NOT_INITIALIZED", "Module not initialized")
-        return
-    }
-
-    coroutineScope.launch {
+    mainHandler.post {
         try {
-            Log.d(TAG, "Starting connection check with longer timeout")
-            val result = communicationManager?.checkWearableConnection()
-            
-            mainHandler.post {
-                val resultArray = Arguments.createArray()
-                resultArray.pushBoolean(result?.get(0) ?: false) // nodePresent
-                resultArray.pushBoolean(result?.get(1) ?: false) // ackReceived
-                
-                Log.d(TAG, "checkWearableConnection result: nodePresent=${result?.get(0)}, ackReceived=${result?.get(1)}")
-                promise.resolve(resultArray)
-            }
+            communicationManager?.sendMessageToWearable(message)
+            promise.resolve(true) // resolve immediately
         } catch (e: Exception) {
-            Log.e(TAG, "checkWearableConnection failed: ${e.message}", e)
-            mainHandler.post {
-                promise.reject("CHECK_FAILED", e.message, e)
-            }
+            promise.reject("SEND_ERROR", e.message, e)
         }
     }
 }
 
     @ReactMethod
+    fun checkWearableConnection(promise: Promise) {
+        Log.e(TAG, "checkWearableConnection")
+        coroutineScope.launch {
+            try {
+                val result = communicationManager?.checkWearableConnection()
+                val arr = Arguments.createArray()
+                arr.pushBoolean(result?.get(0) ?: false) // nodePresent
+                arr.pushBoolean(result?.get(1) ?: false) // ackReceived
+                promise.resolve(arr)
+            } catch (e: Exception) {
+                promise.reject("CHECK_FAILED", e)
+            }
+        }
+    }
+
+    @ReactMethod
     fun cleanup() {
-        Log.d(TAG, "cleanup called")
         mainHandler.post {
             try {
                 communicationManager?.unregisterListeners()
                 communicationManager = null
-                isInitialized = false
-                Log.d(TAG, "Cleanup completed")
             } catch (e: Exception) {
                 Log.e(TAG, "Cleanup failed: ${e.message}", e)
             }
         }
     }
 
-    @ReactMethod
-    fun isModuleInitialized(callback: Callback) {
-        callback.invoke(isInitialized)
-    }
-
     private fun sendEvent(eventName: String, params: WritableMap) {
         try {
             if (reactContext.hasActiveCatalystInstance()) {
-                Log.d(TAG, "sendEvent: $eventName")
+                Log.e(TAG, "sendEvent: $eventName, $params")
                 reactContext
                     .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
                     .emit(eventName, params)
-            } else {
-                Log.w(TAG, "Cannot send event $eventName - no active catalyst instance")
             }
         } catch (e: Exception) {
             Log.e(TAG, "sendEvent failed: ${e.message}", e)
@@ -175,8 +131,6 @@ fun checkWearableConnection(promise: Promise) {
     }
 
     override fun onCatalystInstanceDestroy() {
-        Log.d(TAG, "onCatalystInstanceDestroy called")
         cleanup()
-        super.onCatalystInstanceDestroy()
     }
 }

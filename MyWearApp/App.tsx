@@ -43,13 +43,10 @@ const App = () => {
   const addLog = (msg: string) => setLogs(prev => [msg, ...prev]);
 
   const sendMessage = () => {
-
     if (message.trim().length === 0) return;
-    MobileCommunicationModule.sendMessageToWearable(message, (success: boolean, err?: string) => {
-      console.log("Message sent to wear: " + message);
-      if (success) addLog(`Message sent to wear: ${message}`);
-      else addLog(`Failed to send: ${err}`);
-    });
+    MobileCommunicationModule.sendMessageToWearable(message)
+      .then(() => addLog(`Message sent to wear: ${message}`))
+      .catch((err: any) => addLog(`Failed to send: ${err}`));
     setMessage('');
   };
 
