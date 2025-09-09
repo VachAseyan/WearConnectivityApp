@@ -18,13 +18,16 @@ class MobileCommunicationModule(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val coroutineScope = CoroutineScope(Dispatchers.IO)
 
+    // 👉 State to track ACK
+    @Volatile
+    private var ackReceivedState: Boolean = false
+
     companion object {
         private const val TAG = "MobileCommModule"
     }
 
     override fun getName(): String = "MobileCommunicationModule"
 
-    // RN EventEmitter compatibility
     @ReactMethod
     fun addListener(eventName: String) {
         Log.d(TAG, "addListener: $eventName")
@@ -37,100 +40,143 @@ class MobileCommunicationModule(
 
     @ReactMethod
     fun initialize(promise: Promise) {
-        Log.e(TAG, "initialize")
-        mainHandler.post {
-            try {
-                if (communicationManager == null) {
-                    communicationManager = MobileCommunicationManager(reactContext)
+        Log.d(TAG, "initialize called")
+        
+        try {
+            if (communicationManager == null) {
+                communicationManager = MobileCommunicationManager(reactContext)
 
-                    communicationManager?.onMessageReceived = { message: String, fromWear: Boolean ->
-                    Log.e(TAG, "onMessageReceived: $message, $fromWear")
-                        sendEvent("onMessageReceived", Arguments.createMap().apply {
-                            putString("message", message)
-                            putBoolean("fromWear", fromWear)
-                        })
+                // 📩 Message received from Wear
+                communicationManager?.onMessageReceived = { message: String, fromWear: Boolean ->
+                    Log.d(TAG, "onMessageReceived: message=$message, fromWear=$fromWear")
+
+                    // 👉 If message is ACK, update state
+                    if (message == "ack") {
+                        ackReceivedState = true
+                        Log.d(TAG, "ACK received ✅")
                     }
 
-                    communicationManager?.onWearableConnected = { nodePresent: Boolean, ackReceived: Boolean ->
-                        Log.e(TAG, "onWearableConnected: $nodePresent, $ackReceived")
-                        sendEvent("onWearableConnected", Arguments.createMap().apply {
-                            putBoolean("nodePresent", nodePresent)
-                            putBoolean("ackReceived", ackReceived)
-                        })
-                    }
-
-                    communicationManager?.onMessageSent = { success: Boolean, message: String? ->
-                        Log.e(TAG, "onMessageSent: $success, $message")
-                        sendEvent("onMessageSent", Arguments.createMap().apply {
-                            putBoolean("success", success)
-                            putString("message", message)
-                        })
-                    }
+                    sendEvent("onMessageReceived", Arguments.createMap().apply {
+                        putString("message", message)
+                        putBoolean("fromWear", fromWear)
+                    })
                 }
 
+                // 🔗 Wear connected
+                communicationManager?.onWearableConnected = { nodePresent: Boolean, ackReceived: Boolean ->
+                    Log.d(TAG, "onWearableConnected: nodePresent=$nodePresent, ackReceived=$ackReceived")
+                    sendEvent("onWearableConnected", Arguments.createMap().apply {
+                        putBoolean("nodePresent", nodePresent)
+                        putBoolean("ackReceived", ackReceived)
+                    })
+                }
+
+                // 📤 Message sent
+                communicationManager?.onMessageSent = { success: Boolean, message: String? ->
+                    Log.d(TAG, "onMessageSent: success=$success, message=$message")
+                    sendEvent("onMessageSent", Arguments.createMap().apply {
+                        putBoolean("success", success)
+                        putString("message", message ?: "")
+                    })
+                }
+
+                // Register listeners
                 communicationManager?.registerListeners()
-                promise.resolve(true)
-            } catch (e: Exception) {
-                Log.e(TAG, "Initialize failed: ${e.message}", e)
-                promise.reject("INIT_ERROR", e.message)
+                Log.d(TAG, "Communication manager initialized and listeners registered")
             }
+            
+            promise.resolve(true)
+        } catch (e: Exception) {
+            Log.e(TAG, "Initialize failed: ${e.message}", e)
+            promise.reject("INIT_ERROR", e.message, e)
         }
     }
 
     @ReactMethod
     fun sendMessageToWearable(message: String, promise: Promise) {
-    mainHandler.post {
+        Log.d(TAG, "sendMessageToWearable called with: $message")
+        
+        if (communicationManager == null) {
+            Log.e(TAG, "Communication manager not initialized")
+            promise.reject("NOT_INITIALIZED", "Communication manager not initialized")
+            return
+        }
+
         try {
             communicationManager?.sendMessageToWearable(message)
-            promise.resolve(true) // resolve immediately
+            Log.d(TAG, "Message sent to manager")
+            promise.resolve(true)
         } catch (e: Exception) {
+            Log.e(TAG, "Failed to send message: ${e.message}", e)
             promise.reject("SEND_ERROR", e.message, e)
         }
     }
-}
 
     @ReactMethod
     fun checkWearableConnection(promise: Promise) {
-        Log.e(TAG, "checkWearableConnection")
+        Log.d(TAG, "checkWearableConnection called")
+        
+        if (communicationManager == null) {
+            promise.reject("NOT_INITIALIZED", "Communication manager not initialized")
+            return
+        }
+
         coroutineScope.launch {
             try {
                 val result = communicationManager?.checkWearableConnection()
-                val arr = Arguments.createArray()
-                arr.pushBoolean(result?.get(0) ?: false) // nodePresent
-                arr.pushBoolean(result?.get(1) ?: false) // ackReceived
-                promise.resolve(arr)
+                val nodePresent = result?.get(0) ?: false
+                val ackFlag = ackReceivedState
+
+                Log.d(TAG, "Connection check result: nodePresent=$nodePresent, ackReceived=$ackFlag")
+
+                val responseMap = Arguments.createMap().apply {
+                    putBoolean("nodePresent", nodePresent)
+                    putBoolean("ackReceived", ackFlag)
+                }
+
+                // 👉 Reset ack state after reporting (so next ping needs fresh ACK)
+                ackReceivedState = false
+
+                promise.resolve(responseMap)
             } catch (e: Exception) {
-                promise.reject("CHECK_FAILED", e)
+                Log.e(TAG, "Connection check failed: ${e.message}", e)
+                promise.reject("CHECK_FAILED", e.message, e)
             }
         }
     }
 
     @ReactMethod
     fun cleanup() {
-        mainHandler.post {
-            try {
-                communicationManager?.unregisterListeners()
-                communicationManager = null
-            } catch (e: Exception) {
-                Log.e(TAG, "Cleanup failed: ${e.message}", e)
-            }
+        Log.d(TAG, "cleanup called")
+        try {
+            communicationManager?.unregisterListeners()
+            communicationManager = null
+            ackReceivedState = false
+            Log.d(TAG, "Cleanup completed")
+        } catch (e: Exception) {
+            Log.e(TAG, "Cleanup failed: ${e.message}", e)
         }
     }
 
     private fun sendEvent(eventName: String, params: WritableMap) {
         try {
             if (reactContext.hasActiveCatalystInstance()) {
-                Log.e(TAG, "sendEvent: $eventName, $params")
+                Log.d(TAG, "Sending event: $eventName with params: $params")
                 reactContext
                     .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
                     .emit(eventName, params)
+                Log.d(TAG, "Event sent successfully: $eventName")
+            } else {
+                Log.w(TAG, "Cannot send event $eventName - React context not active")
             }
         } catch (e: Exception) {
-            Log.e(TAG, "sendEvent failed: ${e.message}", e)
+            Log.e(TAG, "Failed to send event $eventName: ${e.message}", e)
         }
     }
 
     override fun onCatalystInstanceDestroy() {
+        Log.d(TAG, "onCatalystInstanceDestroy called")
         cleanup()
+        super.onCatalystInstanceDestroy()
     }
 }
