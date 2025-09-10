@@ -1,4 +1,4 @@
-package com.watchapp
+package com.mywearapp
 
 import android.os.Handler
 import android.os.Looper
@@ -36,72 +36,87 @@ class WearableCommunicationModule(
         Log.d(TAG, "initialize called")
         
         if (isInitialized) {
+            Log.d(TAG, "Already initialized, resolving promise")
             promise.resolve(true)
             return
         }
 
-        mainHandler.post {
-            try {
-                initializeCommunication()
-                promise.resolve(true)
-            } catch (e: Exception) {
-                Log.e(TAG, "Initialize failed: ${e.message}", e)
-                promise.reject("INIT_ERROR", e.message, e)
-            }
+        try {
+            initializeCommunication()
+            promise.resolve(true)
+            Log.d(TAG, "Initialize promise resolved")
+        } catch (e: Exception) {
+            Log.e(TAG, "Initialize failed: ${e.message}", e)
+            promise.reject("INIT_ERROR", e.message, e)
         }
     }
 
     private fun initializeCommunication() {
         if (isInitialized) {
+            Log.d(TAG, "Already initialized, skipping")
             return
         }
         
         Log.d(TAG, "initializeCommunication starting")
         
-        communicationManager = WearableCommunicationManager(reactContext)
+        try {
+            communicationManager = WearableCommunicationManager(reactContext)
 
-        
+            // Set up callbacks BEFORE registering listeners
+            communicationManager?.onMessageReceived = { message, fromMobile ->
+                Log.d(TAG, "onMessageReceived: $message, fromMobile: $fromMobile")
 
-        // Set up callbacks BEFORE registering listeners
-        communicationManager?.onMessageReceived = { message, fromMobile ->
-            Log.d(TAG, "onMessageReceived: $message, fromMobile: $fromMobile")
+                // Handle ping/pong protocol
+                if (message.equals("ping", ignoreCase = true)) {
+                    Log.d(TAG, "Received ping from mobile, sending ack")
+                    val success = communicationManager?.sendMessageToMobile("ack")
+                    Log.d(TAG, "ACK send result: $success")
+                }
 
-            if (message == "ping" || message.startsWith("/ping")) {
-            Log.d(TAG, "Received ping from mobile, sending ack")
-            // Send acknowledgment back to mobile
-            communicationManager?.sendMessageToMobile("ack")
-        }
+                // Send event to React Native
+                mainHandler.post {
+                    sendEvent("onMessageReceived", Arguments.createMap().apply {
+                        putString("message", message)
+                        putBoolean("fromMobile", fromMobile)
+                    })
+                }
+            }
 
+            communicationManager?.onMobileConnected = {
+                Log.d(TAG, "onMobileConnected")
+                mainHandler.post {
+                    sendEvent("onMobileConnected", Arguments.createMap().apply {
+                        putBoolean("connected", true)
+                    })
+                }
+            }
+
+            communicationManager?.onMessageSent = { success, msg ->
+                Log.d(TAG, "onMessageSent: success=$success, msg=$msg")
+                mainHandler.post {
+                    sendEvent("onMessageSent", Arguments.createMap().apply {
+                        putBoolean("success", success)
+                        putString("message", msg ?: "")
+                    })
+                }
+            }
+
+            // Register listeners after setting up callbacks
+            communicationManager?.registerListeners()
+            isInitialized = true
+
+            Log.d(TAG, "initializeCommunication completed successfully")
             
-            sendEvent("onMessageReceived", Arguments.createMap().apply {
-                putString("message", message)
-                putBoolean("fromMobile", fromMobile)
-            })
+            // Send initialization complete event
+            mainHandler.post {
+                sendEvent("onInitialized", Arguments.createMap().apply {
+                    putBoolean("success", true)
+                })
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "initializeCommunication failed: ${e.message}", e)
+            throw e
         }
-
-        communicationManager?.onMobileConnected = {
-            Log.d(TAG, "onMobileConnected")
-            sendEvent("onMobileConnected", Arguments.createMap())
-        }
-
-        communicationManager?.onMessageSent = { success, msg ->
-            Log.d(TAG, "onMessageSent: success=$success, msg=$msg")
-            sendEvent("onMessageSent", Arguments.createMap().apply {
-                putBoolean("success", success)
-                putString("message", msg ?: "")
-            })
-        }
-
-        // Register listeners after setting up callbacks
-        communicationManager?.registerListeners()
-        isInitialized = true
-
-        Log.d(TAG, "initializeCommunication completed")
-        
-        // Send initialization complete event
-        sendEvent("onInitialized", Arguments.createMap().apply {
-            putBoolean("success", true)
-        })
     }
 
     @ReactMethod
@@ -109,55 +124,63 @@ class WearableCommunicationModule(
         Log.d(TAG, "sendMessageToMobile: $message")
         
         if (!isInitialized || communicationManager == null) {
-            Log.w(TAG, "Module not initialized, initializing now...")
-            initializeCommunication()
+            Log.w(TAG, "Module not initialized")
+            promise.reject("NOT_INITIALIZED", "Communication module not initialized")
+            return
         }
 
-        mainHandler.post {
-            try {
-                communicationManager?.sendMessageToMobile(message)
-                // Promise resolve անենք անմիջապես, իսկ actual result-ը կգա onMessageSent callback-ով
-                promise.resolve(true)
-            } catch (e: Exception) {
-                Log.e(TAG, "sendMessageToMobile failed: ${e.message}", e)
-                promise.reject("SEND_ERROR", e.message, e)
-            }
+        try {
+            communicationManager?.sendMessageToMobile(message)
+            promise.resolve(true)
+            Log.d(TAG, "Message queued for sending: $message")
+        } catch (e: Exception) {
+            Log.e(TAG, "sendMessageToMobile failed: ${e.message}", e)
+            promise.reject("SEND_ERROR", e.message, e)
         }
     }
 
     @ReactMethod
-    fun isModuleInitialized(callback: Callback) {
-        Log.d(TAG, "isModuleInitialized: $isInitialized")
-        callback.invoke(isInitialized)
+    fun getConnectionStatus(promise: Promise) {
+        Log.d(TAG, "getConnectionStatus called")
+        
+        try {
+            val statusMap = Arguments.createMap().apply {
+                putBoolean("initialized", isInitialized)
+                putBoolean("managerExists", communicationManager != null)
+            }
+            promise.resolve(statusMap)
+        } catch (e: Exception) {
+            Log.e(TAG, "getConnectionStatus failed: ${e.message}", e)
+            promise.reject("STATUS_ERROR", e.message, e)
+        }
     }
 
     @ReactMethod
     fun cleanup() {
         Log.d(TAG, "cleanup called")
-        mainHandler.post {
-            try {
-                communicationManager?.unregisterListeners()
-                communicationManager = null
-                isInitialized = false
-                Log.d(TAG, "Cleanup completed")
-            } catch (e: Exception) {
-                Log.e(TAG, "Cleanup failed: ${e.message}", e)
-            }
+        try {
+            communicationManager?.unregisterListeners()
+            communicationManager = null
+            isInitialized = false
+            Log.d(TAG, "Cleanup completed")
+        } catch (e: Exception) {
+            Log.e(TAG, "Cleanup failed: ${e.message}", e)
         }
     }
 
     private fun sendEvent(eventName: String, params: WritableMap) {
         try {
             if (reactContext.hasActiveCatalystInstance()) {
-                Log.d(TAG, "sendEvent: $eventName")
+                Log.d(TAG, "sendEvent: $eventName with params: $params")
                 reactContext
                     .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
                     .emit(eventName, params)
+                Log.d(TAG, "Event sent successfully: $eventName")
             } else {
                 Log.w(TAG, "Cannot send event $eventName - no active catalyst instance")
             }
         } catch (e: Exception) {
-            Log.e(TAG, "sendEvent failed: ${e.message}", e)
+            Log.e(TAG, "sendEvent failed for $eventName: ${e.message}", e)
         }
     }
 

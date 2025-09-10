@@ -29,6 +29,10 @@
 -keepclassmembers class com.watchapp.** { *; }
 -keepclassmembers class com.mywearapp.** { *; }
 
+# --- External communication managers (avoid stripping) ---
+-keep class com.example.mobilecommunication.** { *; }
+-keep class com.example.wearablecommunication.** { *; }
+
 # --- JNI methods (React Native bridge) ---
 -keepclasseswithmembernames class * {
     native <methods>;

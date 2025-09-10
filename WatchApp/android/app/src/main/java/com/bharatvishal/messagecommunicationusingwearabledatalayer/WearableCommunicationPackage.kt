@@ -1,4 +1,4 @@
-package com.watchapp
+package com.mywearapp
 
 import com.facebook.react.ReactPackage
 import com.facebook.react.bridge.NativeModule

@@ -20,14 +20,14 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
-    namespace "com.watchapp"
+    namespace "com.mywearapp"
     defaultConfig {
-        applicationId "com.watchapp"
+        applicationId "com.mywearapp"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
         versionName "1.0"
-        multiDexEnabled true   // 🔑 Wear app-ում էլ ավելացրու, որ Dex error չլինի
+        multiDexEnabled true   
     }
 
     signingConfigs {

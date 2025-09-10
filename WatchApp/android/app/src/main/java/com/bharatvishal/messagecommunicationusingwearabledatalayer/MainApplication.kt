@@ -1,4 +1,4 @@
-package com.watchapp
+package com.mywearapp
 
 import android.app.Application
 import android.util.Log
